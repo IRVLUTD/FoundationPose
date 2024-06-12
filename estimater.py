@@ -124,12 +124,17 @@ class FoundationPose:
     logging.info(f"self.rot_grid: {self.rot_grid.shape}")
 
 
-  def generate_random_pose_hypo(self, K, rgb, depth, mask, scene_pts=None):
+  def generate_random_pose_hypo(self, K, rgb, depth, mask, scene_pts=None, init_ob_in_cam=None):
     '''
     @scene_pts: torch tensor (N,3)
     '''
     ob_in_cams = self.rot_grid.clone()
-    center = self.guess_translation(depth=depth, mask=mask, K=K)
+
+    if init_ob_in_cam is None:
+      center = self.guess_translation(depth=depth, mask=mask, K=K)
+    else:
+      center = init_ob_in_cam[:3,3]
+
     ob_in_cams[:,:3,3] = torch.tensor(center, device='cuda', dtype=torch.float).reshape(1,3)
     return ob_in_cams
 
@@ -156,7 +161,7 @@ class FoundationPose:
     return center.reshape(3)
 
 
-  def register(self, K, rgb, depth, ob_mask, ob_id=None, glctx=None, iteration=5):
+  def register(self, K, rgb, depth=None, ob_mask=None, ob_id=None, glctx=None, iteration=5, init_ob_in_cam=None):
     '''Copmute pose from given pts to self.pcd
     @pts: (N,3) np array, downsampled scene points
     '''
@@ -170,40 +175,50 @@ class FoundationPose:
       else:
         self.glctx = glctx
 
-    depth = erode_depth(depth, radius=2, device='cuda')
-    depth = bilateral_filter_depth(depth, radius=2, device='cuda')
+    
 
-    if self.debug>=2:
-      xyz_map = depth2xyzmap(depth, K)
-      valid = xyz_map[...,2]>=0.1
-      pcd = toOpen3dCloud(xyz_map[valid], rgb[valid])
-      o3d.io.write_point_cloud(f'{self.debug_dir}/scene_raw.ply',pcd)
-      cv2.imwrite(f'{self.debug_dir}/ob_mask.png', (ob_mask*255.0).clip(0,255))
+    if depth is not None and ob_mask is not None:
+      depth = erode_depth(depth, radius=2, device='cuda')
+      depth = bilateral_filter_depth(depth, radius=2, device='cuda')
+      if self.debug>=2:
+        xyz_map = depth2xyzmap(depth, K)
+        valid = xyz_map[...,2]>=0.1
+        pcd = toOpen3dCloud(xyz_map[valid], rgb[valid])
+        o3d.io.write_point_cloud(f'{self.debug_dir}/scene_raw.ply',pcd)
+        cv2.imwrite(f'{self.debug_dir}/ob_mask.png', (ob_mask*255.0).clip(0,255))
+      valid = (depth>=0.1) & (ob_mask>0)
+      if valid.sum()<4:
+        logging.info(f'valid too small, return')
+        pose = np.eye(4)
+        pose[:3,3] = self.guess_translation(depth=depth, mask=ob_mask, K=K)
+        return pose
+
+      if self.debug>=2:
+        imageio.imwrite(f'{self.debug_dir}/color.png', rgb)
+        cv2.imwrite(f'{self.debug_dir}/depth.png', (depth*1000).astype(np.uint16))
+        valid = xyz_map[...,2]>=0.1
+        pcd = toOpen3dCloud(xyz_map[valid], rgb[valid])
+        o3d.io.write_point_cloud(f'{self.debug_dir}/scene_complete.ply',pcd)
+    else:
+      logging.info(f'No depth or ob_mask')
+      depth = np.zeros(rgb.shape[:2], dtype=np.float32)
+      ob_mask = np.zeros(rgb.shape[:2], dtype=bool)
+
 
     normal_map = None
-    valid = (depth>=0.1) & (ob_mask>0)
-    if valid.sum()<4:
-      logging.info(f'valid too small, return')
-      pose = np.eye(4)
-      pose[:3,3] = self.guess_translation(depth=depth, mask=ob_mask, K=K)
-      return pose
-
-    if self.debug>=2:
-      imageio.imwrite(f'{self.debug_dir}/color.png', rgb)
-      cv2.imwrite(f'{self.debug_dir}/depth.png', (depth*1000).astype(np.uint16))
-      valid = xyz_map[...,2]>=0.1
-      pcd = toOpen3dCloud(xyz_map[valid], rgb[valid])
-      o3d.io.write_point_cloud(f'{self.debug_dir}/scene_complete.ply',pcd)
-
     self.H, self.W = depth.shape[:2]
     self.K = K
     self.ob_id = ob_id
     self.ob_mask = ob_mask
 
-    poses = self.generate_random_pose_hypo(K=K, rgb=rgb, depth=depth, mask=ob_mask, scene_pts=None)
+    poses = self.generate_random_pose_hypo(K=K, rgb=rgb, depth=depth, mask=ob_mask, scene_pts=None, init_ob_in_cam=init_ob_in_cam)
     poses = poses.data.cpu().numpy()
     logging.info(f'poses:{poses.shape}')
-    center = self.guess_translation(depth=depth, mask=ob_mask, K=K)
+
+    if init_ob_in_cam is None:
+      center = self.guess_translation(depth=depth, mask=ob_mask, K=K)
+    else:
+      center = init_ob_in_cam[:3,3].copy()
 
     poses = torch.as_tensor(poses, device='cuda', dtype=torch.float)
     poses[:,:3,3] = torch.as_tensor(center.reshape(1,3), device='cuda')
@@ -247,20 +262,27 @@ class FoundationPose:
     return -torch.ones(len(poses), device='cuda', dtype=torch.float)
 
 
-  def track_one(self, rgb, depth, K, iteration, extra={}):
+  def track_one(self, rgb, depth=None, K=None, iteration=5, extra={}, prev_ob_in_cam=None):
     if self.pose_last is None:
       logging.info("Please init pose by register first")
       raise RuntimeError
     logging.info("Welcome")
 
-    depth = torch.as_tensor(depth, device='cuda', dtype=torch.float)
-    depth = erode_depth(depth, radius=2, device='cuda')
-    depth = bilateral_filter_depth(depth, radius=2, device='cuda')
-    logging.info("depth processing done")
+    if depth is None:
+      depth = torch.zeros(rgb.shape[:2], device='cuda', dtype=torch.float)
+    else:
+      depth = torch.as_tensor(depth, device='cuda', dtype=torch.float)
+      depth = erode_depth(depth, radius=2, device='cuda')
+      depth = bilateral_filter_depth(depth, radius=2, device='cuda')
+      logging.info("depth processing done")
+
+    if K is None:
+      K = self.K.copy()
 
     xyz_map = depth2xyzmap_batch(depth[None], torch.as_tensor(K, dtype=torch.float, device='cuda')[None], zfar=np.inf)[0]
 
-    pose, vis = self.refiner.predict(mesh=self.mesh, mesh_tensors=self.mesh_tensors, rgb=rgb, depth=depth, K=K, ob_in_cams=self.pose_last.reshape(1,4,4).data.cpu().numpy(), normal_map=None, xyz_map=xyz_map, mesh_diameter=self.diameter, glctx=self.glctx, iteration=iteration, get_vis=self.debug>=2)
+    ob_in_cams=self.pose_last.reshape(1,4,4).data.cpu().numpy() if prev_ob_in_cam is None else prev_ob_in_cam.reshape(1, 4, 4)
+    pose, vis = self.refiner.predict(mesh=self.mesh, mesh_tensors=self.mesh_tensors, rgb=rgb, depth=depth, K=K, ob_in_cams=ob_in_cams, normal_map=None, xyz_map=xyz_map, mesh_diameter=self.diameter, glctx=self.glctx, iteration=iteration, get_vis=self.debug>=2)
     logging.info("pose done")
     if self.debug>=2:
       extra['vis'] = vis
