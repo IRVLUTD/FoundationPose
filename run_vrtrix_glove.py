@@ -5,15 +5,15 @@ import argparse
 
 if __name__=='__main__':
   parser = argparse.ArgumentParser()
-  parser.add_argument('--video_dir', type=str, default='/home/bowen/debug/foundationpose_prep/left')
+  parser.add_argument('--video_dir', type=str, default='data/foundationpose_prep/left')
   parser.add_argument('--min_n_views', type=int, default=40)
   parser.add_argument('--inplane_step', type=float, default=60)
   parser.add_argument('--cluster_rot_diff', type=float, default=30)
   parser.add_argument('--est_refine_iter', type=int, default=5)
   parser.add_argument('--track_refine_iter', type=int, default=2)
   parser.add_argument('--zfar', type=float, default=np.inf)
-  parser.add_argument('--debug_dir', type=str, default='/home/bowen/debug/foundationpose_prep/left_debug')
-  parser.add_argument('--out_dir', type=str, default='/home/bowen/debug/refined_hand')
+  parser.add_argument('--debug_dir', type=str, default='data/foundationpose_prep/left_debug')
+  parser.add_argument('--out_dir', type=str, default='data/refined_hand')
   parser.add_argument('--debug', type=int, default=2)
   parser.add_argument('--max_frames', type=int, default=-1, help='Max frames to process, -1 for all')
   parser.add_argument('--frame_ids', type=str, default=None, help='Comma-separated frame IDs to process, e.g. frame_000240')
@@ -64,8 +64,8 @@ if __name__=='__main__':
     mask = mask.astype(bool)
 
     # Zero out background pixels using the segmentation mask
-    color[~mask] = 0
-    depth[~mask] = 0
+    # color[~mask] = 0
+    # depth[~mask] = 0
 
     mesh_file = f'{video_dir}/meshes/{id_str}.obj'
     if not os.path.exists(mesh_file):
@@ -82,7 +82,7 @@ if __name__=='__main__':
     bbox = np.stack([-extents/2, extents/2], axis=0).reshape(2,3)
 
     if est is None:
-      est = FoundationPose(model_pts=mesh.vertices, model_normals=mesh.vertex_normals, mesh=mesh, scorer=scorer, refiner=refiner, viewpoint_predictor=None, min_n_views=args.min_n_views, inplane_step=args.inplane_step, cluster_rot_diff=args.cluster_rot_diff, debug_dir=debug_dir, debug=debug)
+      est = FoundationPose(model_pts=mesh.vertices, model_normals=mesh.vertex_normals, mesh=mesh, scorer=scorer, refiner=refiner, debug_dir=debug_dir, debug=debug)
     else:
       est.reset_object(mesh.vertices, mesh.vertex_normals, mesh=mesh)
 
