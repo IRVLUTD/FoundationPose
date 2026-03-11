@@ -240,6 +240,79 @@ class FoundationPose:
     return best_pose.data.cpu().numpy()
 
 
+  def register_with_pose(self, init_pose, K, rgb, depth, ob_mask, ob_id=None, glctx=None, iteration=5):
+    '''Copmute pose from given pts to self.pcd
+    @pts: (N,3) np array, downsampled scene points
+    '''
+    set_seed(0)
+    logging.info('Welcome')
+
+    if self.glctx is None:
+      if glctx is None:
+        self.glctx = dr.RasterizeCudaContext()
+        # self.glctx = dr.RasterizeGLContext()
+      else:
+        self.glctx = glctx
+
+    depth = erode_depth(depth, radius=2, device='cuda')
+    depth = bilateral_filter_depth(depth, radius=2, device='cuda')
+
+    if self.debug>=2:
+      xyz_map = depth2xyzmap(depth, K)
+      valid = xyz_map[...,2]>=0.001
+      pcd = toOpen3dCloud(xyz_map[valid], rgb[valid])
+      o3d.io.write_point_cloud(f'{self.debug_dir}/scene_raw.ply',pcd)
+      cv2.imwrite(f'{self.debug_dir}/ob_mask.png', (ob_mask*255.0).clip(0,255))
+
+    normal_map = None
+    valid = (depth>=0.001) & (ob_mask>0)
+    if valid.sum()<4:
+      logging.info(f'valid too small, return')
+      return init_pose
+
+    if self.debug>=2:
+      imageio.imwrite(f'{self.debug_dir}/color.png', rgb)
+      cv2.imwrite(f'{self.debug_dir}/depth.png', (depth*1000).astype(np.uint16))
+      valid = xyz_map[...,2]>=0.001
+      pcd = toOpen3dCloud(xyz_map[valid], rgb[valid])
+      o3d.io.write_point_cloud(f'{self.debug_dir}/scene_complete.ply',pcd)
+
+    self.H, self.W = depth.shape[:2]
+    self.K = K
+    self.ob_id = ob_id
+    self.ob_mask = ob_mask
+
+    # use the initial pose
+    poses = np.expand_dims(init_pose, axis=0)
+    logging.info(f'poses:{poses.shape}')
+    poses = torch.as_tensor(poses, device='cuda', dtype=torch.float)
+
+    xyz_map = depth2xyzmap(depth, K)
+    poses, vis = self.refiner.predict(mesh=self.mesh, mesh_tensors=self.mesh_tensors, rgb=rgb, depth=depth, K=K, ob_in_cams=poses.data.cpu().numpy(), normal_map=normal_map, xyz_map=xyz_map, glctx=self.glctx, mesh_diameter=self.diameter, iteration=iteration, get_vis=self.debug>=2)
+    if vis is not None:
+      imageio.imwrite(f'{self.debug_dir}/vis_refiner.png', vis)
+
+    scores, vis = self.scorer.predict(mesh=self.mesh, rgb=rgb, depth=depth, K=K, ob_in_cams=poses.data.cpu().numpy(), normal_map=normal_map, mesh_tensors=self.mesh_tensors, glctx=self.glctx, mesh_diameter=self.diameter, get_vis=self.debug>=2)
+    if vis is not None:
+      imageio.imwrite(f'{self.debug_dir}/vis_score.png', vis)
+
+    ids = torch.as_tensor(scores).argsort(descending=True)
+    logging.info(f'sort ids:{ids}')
+    scores = scores[ids]
+    poses = poses[ids]
+
+    logging.info(f'sorted scores:{scores}')
+
+    best_pose = poses[0]@self.get_tf_to_centered_mesh()
+    self.pose_last = poses[0]
+    self.best_id = ids[0]
+
+    self.poses = poses
+    self.scores = scores
+
+    return best_pose.data.cpu().numpy()    
+
+
   def compute_add_err_to_gt_pose(self, poses):
     '''
     @poses: wrt. the centered mesh
