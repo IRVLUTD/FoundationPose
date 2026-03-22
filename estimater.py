@@ -240,7 +240,7 @@ class FoundationPose:
     return best_pose.data.cpu().numpy()
 
 
-  def register_with_pose(self, init_pose, K, rgb, depth, ob_mask, ob_id=None, glctx=None, iteration=5):
+  def register_with_pose(self, init_pose, K, rgb, depth, ob_mask=None, ob_id=None, glctx=None, iteration=5):
     '''Copmute pose from given pts to self.pcd
     @pts: (N,3) np array, downsampled scene points
     '''
@@ -262,10 +262,14 @@ class FoundationPose:
       valid = xyz_map[...,2]>=0.001
       pcd = toOpen3dCloud(xyz_map[valid], rgb[valid])
       o3d.io.write_point_cloud(f'{self.debug_dir}/scene_raw.ply',pcd)
-      cv2.imwrite(f'{self.debug_dir}/ob_mask.png', (ob_mask*255.0).clip(0,255))
+      if ob_mask is not None:
+        cv2.imwrite(f'{self.debug_dir}/ob_mask.png', (ob_mask*255.0).clip(0,255))
 
     normal_map = None
-    valid = (depth>=0.001) & (ob_mask>0)
+    if ob_mask is not None:
+      valid = (depth>=0.001) & (ob_mask>0)
+    else:
+      valid = depth>=0.001
     if valid.sum()<4:
       logging.info(f'valid too small, return')
       return init_pose

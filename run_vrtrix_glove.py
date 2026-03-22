@@ -113,11 +113,11 @@ if __name__ == "__main__":
     out_pose_dir.mkdir(parents=True, exist_ok=True)
     out_image_dir.mkdir(parents=True, exist_ok=True)
 
-    K = np.loadtxt(f'{video_dir}/cam_K.txt').reshape(3, 3)
+    K = np.loadtxt(f'{video_dir}/cam_K_oak.txt').reshape(3, 3)
 
     color_files = sorted(
-        glob.glob(f'{video_dir}/rgb/*.png') +
-        glob.glob(f'{video_dir}/rgb/*.jpg')
+        glob.glob(f'{video_dir}/rgb_oak/*.png') +
+        glob.glob(f'{video_dir}/rgb_oak/*.jpg')
     )
 
     logging.info(f'Found {len(color_files)} color frames')
@@ -143,11 +143,11 @@ if __name__ == "__main__":
         color = imageio.imread(color_file)[..., :3]
         H, W = color.shape[:2]
 
-        depth_file = f'{video_dir}/depths/{id_str}.png'
+        depth_file = f'{video_dir}/depths_oak/{id_str}.png'
         depth = cv2.imread(depth_file, -1) / 1e3
         depth[(depth < 0.001) | (depth >= args.zfar)] = 0
 
-        mask_file = f'{video_dir}/masks/{id_str}.png'
+        mask_file = f'{video_dir}/masks_oak/{id_str}.png'
         mask = cv2.imread(mask_file, -1)
 
         if len(mask.shape) == 3:
@@ -161,8 +161,6 @@ if __name__ == "__main__":
         color_origin = color.copy()
         color[~mask] = 0
         depth[~mask] = 0
-        color[mask > 0] = 255
-        # color = np.clip(color.astype(np.float32) * 20.0, 0, 255).astype(np.uint8)
 
         mesh_file = f'{video_dir}/meshes/{id_str}.obj'
         if not os.path.exists(mesh_file):
@@ -170,7 +168,7 @@ if __name__ == "__main__":
             continue
         mesh = trimesh.load(mesh_file, skip_materials=False, force='mesh')
 
-        init_pose_file = f'{video_dir}/init_poses/{id_str}.txt'
+        init_pose_file = f'{video_dir}/init_poses_oak/{id_str}.txt'
         if os.path.exists(init_pose_file):
             init_pose = np.loadtxt(init_pose_file).reshape(4, 4)
 
@@ -187,14 +185,22 @@ if __name__ == "__main__":
         else:
             est.reset_object(mesh.vertices, mesh.vertex_normals, mesh=mesh)
 
-        pose = est.register_with_pose(
-            init_pose = init_pose,
+        pose = est.register(
             K=K,
             rgb=color,
             depth=depth,
             ob_mask=mask,
             iteration=args.est_refine_iter
-        )
+        )            
+
+        # pose = est.register_with_pose(
+        #     init_pose = init_pose,
+        #     K=K,
+        #     rgb=color,
+        #     depth=depth,
+        #     ob_mask=mask,
+        #     iteration=args.est_refine_iter
+        # )
 
         # save pose
         np.savetxt(f'{out_pose_dir}/{id_str}.txt', pose.reshape(4, 4))
@@ -232,3 +238,14 @@ if __name__ == "__main__":
             valid = depth >= 0.001
             pcd = toOpen3dCloud(xyz_map[valid], color[valid])
             o3d.io.write_point_cloud(f'{debug_dir}/scene_complete.ply', pcd)
+
+            # save the initial pose
+            vis = render_overlay(
+                init_pose,
+                mesh=mesh,
+                color=color_origin,
+                K=K,
+                H=H,
+                W=W
+            )
+            imageio.imwrite(f'{debug_dir}/init_pose.png', vis) 
